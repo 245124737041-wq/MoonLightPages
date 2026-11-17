@@ -192,36 +192,312 @@ export function createDefaultUserState(id: string, name: string, email: string, 
   };
 }
 
+const GUEST_ID = 'guest-reader';
+const GUEST_EMAIL = 'reader@moonlightpages.app';
+const GUEST_NAME = 'Evening Reader';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function toFiniteNumber(value: unknown, fallback: number, min = 0): number {
+  const num = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.max(min, num);
+}
+
+function toStringArray(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) return [...fallback];
+  return Array.from(
+    new Set(value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0))
+  );
+}
+
+function sanitizeUserState(
+  rawState: unknown,
+  fallbackId: string,
+  fallbackName: string,
+  fallbackEmail: string,
+  fallbackIsGuest: boolean
+): UserState {
+  const defaults = createDefaultUserState(fallbackId, fallbackName, fallbackEmail, fallbackIsGuest);
+  if (!isPlainObject(rawState)) {
+    return defaults;
+  }
+
+  const rawPrefs = isPlainObject(rawState.preferences) ? rawState.preferences : {};
+  const rawPrivacy = isPlainObject(rawState.privacy) ? rawState.privacy : {};
+  const rawReader = isPlainObject(rawState.readerSettings) ? rawState.readerSettings : {};
+  const rawLibrary = isPlainObject(rawState.library) ? rawState.library : {};
+  const rawStats = isPlainObject(rawState.stats) ? rawState.stats : {};
+  const rawProgress = isPlainObject(rawState.progress) ? rawState.progress : {};
+
+  const sanitizedLibrary: Record<ShelfStatus, string[]> = {
+    reading: toStringArray(rawLibrary.reading, defaults.library.reading),
+    want_to_read: toStringArray(rawLibrary.want_to_read, defaults.library.want_to_read),
+    completed: toStringArray(rawLibrary.completed, defaults.library.completed),
+    abandoned: toStringArray(rawLibrary.abandoned, defaults.library.abandoned),
+    favorites: toStringArray(rawLibrary.favorites, defaults.library.favorites),
+  };
+
+  const sanitizedProgress: Record<string, ReadingProgressItem> = {};
+  for (const [bookId, entry] of Object.entries(rawProgress)) {
+    if (!isPlainObject(entry)) continue;
+    const bookmarks = Array.isArray(entry.bookmarks)
+      ? Array.from(
+          new Set(
+            entry.bookmarks.filter(
+              (b): b is number => typeof b === 'number' && Number.isInteger(b) && b >= 0
+            )
+          )
+        )
+      : [];
+    const highlights = Array.isArray(entry.highlights)
+      ? entry.highlights
+          .filter(
+            (h): h is { chapterIndex: number; text: string } =>
+              isPlainObject(h) &&
+              typeof h.chapterIndex === 'number' &&
+              Number.isInteger(h.chapterIndex) &&
+              typeof h.text === 'string'
+          )
+          .map((h) => ({ chapterIndex: Math.max(0, h.chapterIndex), text: h.text }))
+      : [];
+
+    sanitizedProgress[bookId] = {
+      bookId: typeof entry.bookId === 'string' && entry.bookId ? entry.bookId : bookId,
+      currentChapterIndex: Math.floor(toFiniteNumber(entry.currentChapterIndex, 0)),
+      currentPage: Math.floor(toFiniteNumber(entry.currentPage, 1, 1)),
+      percentComplete: Math.min(100, Math.round(toFiniteNumber(entry.percentComplete, 0))),
+      minutesRead: Math.round(toFiniteNumber(entry.minutesRead, 0)),
+      bookmarks,
+      highlights,
+      rating: typeof entry.rating === 'number' && Number.isFinite(entry.rating) ? entry.rating : undefined,
+      lastReadAt:
+        typeof entry.lastReadAt === 'string' && entry.lastReadAt
+          ? entry.lastReadAt
+          : new Date().toISOString(),
+    };
+  }
+
+  const sanitizedVocabulary: VocabularyItem[] = Array.isArray(rawState.vocabulary)
+    ? rawState.vocabulary
+        .filter((v): v is VocabularyItem => isPlainObject(v) && typeof v.word === 'string' && v.word.length > 0)
+        .map((v, idx) => ({
+          id: typeof v.id === 'string' && v.id ? v.id : `vocab-${idx}`,
+          word: v.word,
+          simpleMeaning: typeof v.simpleMeaning === 'string' ? v.simpleMeaning : '',
+          example: typeof v.example === 'string' ? v.example : '',
+          similarWords: toStringArray(v.similarWords, []),
+          difficulty: v.difficulty === 'Easy' || v.difficulty === 'Medium' || v.difficulty === 'Hard' ? v.difficulty : 'Medium',
+          translatedMeaning: typeof v.translatedMeaning === 'string' ? v.translatedMeaning : undefined,
+          translatedLanguage:
+            v.translatedLanguage === 'English' ||
+            v.translatedLanguage === 'Hindi' ||
+            v.translatedLanguage === 'Telugu'
+              ? v.translatedLanguage
+              : undefined,
+          simpleEnglishSentence:
+            typeof v.simpleEnglishSentence === 'string' ? v.simpleEnglishSentence : undefined,
+          bookTitle: typeof v.bookTitle === 'string' && v.bookTitle ? v.bookTitle : 'Reading',
+          savedAt: typeof v.savedAt === 'string' && v.savedAt ? v.savedAt : new Date().toISOString(),
+        }))
+    : defaults.vocabulary;
+
+  const sanitizedJournal: JournalEntry[] = Array.isArray(rawState.journal)
+    ? rawState.journal
+        .filter((j): j is JournalEntry => isPlainObject(j))
+        .map((j, idx) => ({
+          id: typeof j.id === 'string' && j.id ? j.id : `journal-${idx}`,
+          bookId: typeof j.bookId === 'string' ? j.bookId : '',
+          bookTitle: typeof j.bookTitle === 'string' && j.bookTitle ? j.bookTitle : 'Novel',
+          chapterTitle: typeof j.chapterTitle === 'string' && j.chapterTitle ? j.chapterTitle : 'Reflection',
+          thought: typeof j.thought === 'string' ? j.thought : '',
+          favoriteCharacter: typeof j.favoriteCharacter === 'string' ? j.favoriteCharacter : '',
+          favoriteQuote: typeof j.favoriteQuote === 'string' ? j.favoriteQuote : '',
+          feeling: typeof j.feeling === 'string' ? j.feeling : '',
+          createdAt: typeof j.createdAt === 'string' && j.createdAt ? j.createdAt : new Date().toISOString(),
+        }))
+    : defaults.journal;
+
+  const sanitizedJourney: JourneyStage[] =
+    Array.isArray(rawState.journey) && rawState.journey.length > 0
+      ? rawState.journey
+          .filter((stage): stage is JourneyStage => isPlainObject(stage) && typeof stage.level === 'number')
+          .map((stage) => ({
+            level: (stage.level >= 1 && stage.level <= 5 ? stage.level : 1) as 1 | 2 | 3 | 4 | 5,
+            label: typeof stage.label === 'string' ? stage.label : `Level ${stage.level}`,
+            description: typeof stage.description === 'string' ? stage.description : '',
+            bookId: typeof stage.bookId === 'string' ? stage.bookId : 'tagore-stories',
+            status:
+              stage.status === 'completed' ||
+              stage.status === 'current' ||
+              stage.status === 'upcoming' ||
+              stage.status === 'skipped'
+                ? stage.status
+                : 'upcoming',
+          }))
+      : defaults.journey;
+
+  const isGuest = typeof rawState.isGuest === 'boolean' ? rawState.isGuest : fallbackIsGuest;
+  const rawEmail = typeof rawState.email === 'string' && rawState.email ? rawState.email : fallbackEmail;
+  const email = isGuest && rawEmail === 'reader@vellum.app' ? GUEST_EMAIL : rawEmail;
+
+  return {
+    id: typeof rawState.id === 'string' && rawState.id ? rawState.id : fallbackId,
+    name: typeof rawState.name === 'string' && rawState.name ? rawState.name : fallbackName,
+    email,
+    isGuest,
+    preferences: {
+      ...defaults.preferences,
+      ...(rawPrefs as Partial<UserPreferences>),
+      genres: Array.isArray(rawPrefs.genres)
+        ? (toStringArray(rawPrefs.genres, defaults.preferences.genres) as UserPreferences['genres'])
+        : defaults.preferences.genres,
+      favoriteAuthors: toStringArray(rawPrefs.favoriteAuthors, defaults.preferences.favoriteAuthors),
+      maxDifficulty: Math.min(
+        5,
+        Math.max(1, Math.round(toFiniteNumber(rawPrefs.maxDifficulty, defaults.preferences.maxDifficulty, 1)))
+      ),
+    },
+    privacy: {
+      ...defaults.privacy,
+      ...(rawPrivacy as Partial<PrivacySettings>),
+    },
+    readerSettings: {
+      ...defaults.readerSettings,
+      ...(rawReader as Partial<ReaderSettings>),
+      fontSize: Math.min(
+        24,
+        Math.max(15, Math.round(toFiniteNumber(rawReader.fontSize, defaults.readerSettings.fontSize, 15)))
+      ),
+    },
+    library: sanitizedLibrary,
+    progress: sanitizedProgress,
+    currentBookId:
+      typeof rawState.currentBookId === 'string' || rawState.currentBookId === null
+        ? rawState.currentBookId
+        : defaults.currentBookId,
+    vocabulary: sanitizedVocabulary,
+    journal: sanitizedJournal,
+    journey: sanitizedJourney,
+    stats: {
+      pagesRead: Math.round(toFiniteNumber(rawStats.pagesRead, defaults.stats.pagesRead)),
+      chaptersCompleted: Math.round(
+        toFiniteNumber(rawStats.chaptersCompleted, defaults.stats.chaptersCompleted)
+      ),
+      totalMinutesRead: Math.round(
+        toFiniteNumber(rawStats.totalMinutesRead, defaults.stats.totalMinutesRead)
+      ),
+      booksCompleted: Math.round(toFiniteNumber(rawStats.booksCompleted, defaults.stats.booksCompleted)),
+      streakDays: Math.round(toFiniteNumber(rawStats.streakDays, defaults.stats.streakDays, 1)),
+      lastActiveDate:
+        typeof rawStats.lastActiveDate === 'string' && rawStats.lastActiveDate
+          ? rawStats.lastActiveDate
+          : defaults.stats.lastActiveDate,
+      avgPagesPerHour: Math.min(
+        100,
+        Math.max(10, Math.round(toFiniteNumber(rawStats.avgPagesPerHour, defaults.stats.avgPagesPerHour, 10)))
+      ),
+      challengeDay: Math.min(
+        7,
+        Math.max(1, Math.round(toFiniteNumber(rawStats.challengeDay, defaults.stats.challengeDay, 1)))
+      ),
+      challengePagesToday: Math.round(
+        toFiniteNumber(rawStats.challengePagesToday, defaults.stats.challengePagesToday)
+      ),
+    },
+  };
+}
+
+function createDefaultGuestAccount(): StoredAccount {
+  return {
+    id: GUEST_ID,
+    email: GUEST_EMAIL,
+    name: GUEST_NAME,
+    passwordHash: '',
+    salt: '',
+    state: createDefaultUserState(GUEST_ID, GUEST_NAME, GUEST_EMAIL, true),
+  };
+}
+
+function sanitizeStore(parsed: unknown): DataFileSchema {
+  const accounts: Record<string, StoredAccount> = {};
+  const sessions: Record<string, string> = {};
+
+  if (isPlainObject(parsed)) {
+    if (isPlainObject(parsed.accounts)) {
+      for (const [key, acc] of Object.entries(parsed.accounts)) {
+        if (!isPlainObject(acc)) continue;
+        const id = typeof acc.id === 'string' && acc.id ? acc.id : key;
+        const isGuest = id === GUEST_ID || (isPlainObject(acc.state) && acc.state.isGuest === true);
+        const rawEmail = typeof acc.email === 'string' && acc.email ? acc.email : GUEST_EMAIL;
+        const email = isGuest && rawEmail === 'reader@vellum.app' ? GUEST_EMAIL : rawEmail;
+        const name = typeof acc.name === 'string' && acc.name ? acc.name : GUEST_NAME;
+
+        accounts[id] = {
+          id,
+          email,
+          name,
+          passwordHash: typeof acc.passwordHash === 'string' ? acc.passwordHash : '',
+          salt: typeof acc.salt === 'string' ? acc.salt : '',
+          state: sanitizeUserState(acc.state, id, name, email, isGuest),
+        };
+      }
+    }
+
+    if (isPlainObject(parsed.sessions)) {
+      for (const [token, accountId] of Object.entries(parsed.sessions)) {
+        if (typeof accountId === 'string' && accounts[accountId]) {
+          sessions[token] = accountId;
+        }
+      }
+    }
+  }
+
+  if (!accounts[GUEST_ID]) {
+    accounts[GUEST_ID] = createDefaultGuestAccount();
+  }
+
+  return { accounts, sessions };
+}
+
 function loadStore(): DataFileSchema {
   try {
     if (fs.existsSync(DATA_FILE)) {
-      const raw = fs.readFileSync(DATA_FILE, 'utf-8');
-      return JSON.parse(raw) as DataFileSchema;
+      const raw = fs.readFileSync(DATA_FILE, 'utf-8').trim();
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return sanitizeStore(parsed);
+      }
     }
   } catch (err) {
     console.error('Failed to read store file, initializing fresh store:', err);
   }
-  const guestId = 'guest-reader';
-  return {
+  const fresh: DataFileSchema = {
     accounts: {
-      [guestId]: {
-        id: guestId,
-        email: 'reader@vellum.app',
-        name: 'Evening Reader',
-        passwordHash: '',
-        salt: '',
-        state: createDefaultUserState(guestId, 'Evening Reader', 'reader@vellum.app', true),
-      },
+      [GUEST_ID]: createDefaultGuestAccount(),
     },
     sessions: {},
   };
+  saveStore(fresh);
+  return fresh;
 }
 
 function saveStore(data: DataFileSchema) {
+  const tempFile = `${DATA_FILE}.tmp`;
   try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), 'utf-8');
+    fs.writeFileSync(tempFile, JSON.stringify(data, null, 2), 'utf-8');
+    fs.renameSync(tempFile, DATA_FILE);
   } catch (err) {
     console.error('Failed to save store file:', err);
+    try {
+      if (fs.existsSync(tempFile)) {
+        fs.unlinkSync(tempFile);
+      }
+    } catch {
+      // ignore cleanup error
+    }
   }
 }
 
@@ -269,8 +545,13 @@ export function loginAccount(email: string, password: string): { token: string; 
   if (!account) {
     throw new Error('No account found with this email.');
   }
+  if (!account.salt || !account.passwordHash) {
+    throw new Error('Account credentials are invalid. Please register again.');
+  }
   const computed = hashPassword(password, account.salt);
-  if (!crypto.timingSafeEqual(Buffer.from(computed, 'hex'), Buffer.from(account.passwordHash, 'hex'))) {
+  const computedBuf = Buffer.from(computed, 'hex');
+  const storedBuf = Buffer.from(account.passwordHash, 'hex');
+  if (computedBuf.length !== storedBuf.length || !crypto.timingSafeEqual(computedBuf, storedBuf)) {
     throw new Error('Incorrect password.');
   }
 
@@ -286,24 +567,18 @@ export function getUserFromToken(token?: string): UserState {
     const acc = store.accounts[accountId];
     if (acc) return acc.state;
   }
-  if (!store.accounts['guest-reader']) {
-    store.accounts['guest-reader'] = {
-      id: 'guest-reader',
-      email: 'reader@vellum.app',
-      name: 'Evening Reader',
-      passwordHash: '',
-      salt: '',
-      state: createDefaultUserState('guest-reader', 'Evening Reader', 'reader@vellum.app', true),
-    };
+  if (!store.accounts[GUEST_ID]) {
+    store.accounts[GUEST_ID] = createDefaultGuestAccount();
     saveStore(store);
   }
-  return store.accounts['guest-reader'].state;
+  return store.accounts[GUEST_ID].state;
 }
 
 export function updateUserState(token: string | undefined, updater: (state: UserState) => UserState): UserState {
   const current = getUserFromToken(token);
   const updated = updater(current);
   if (store.accounts[updated.id]) {
+    store.accounts[updated.id].name = updated.name;
     store.accounts[updated.id].state = updated;
     saveStore(store);
   }

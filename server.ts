@@ -114,12 +114,16 @@ app.get('/api/me', (req, res) => {
 app.patch('/api/me/preferences', (req, res) => {
   const token = extractToken(req);
   const { name, preferences, privacy, readerSettings } = req.body || {};
+  const isObj = (v: unknown): v is Record<string, unknown> =>
+    typeof v === 'object' && v !== null && !Array.isArray(v);
   const user = updateUserState(token, (state) => ({
     ...state,
     name: typeof name === 'string' && name.trim() ? name.trim() : state.name,
-    preferences: preferences ? { ...state.preferences, ...preferences } : state.preferences,
-    privacy: privacy ? { ...state.privacy, ...privacy } : state.privacy,
-    readerSettings: readerSettings
+    preferences: isObj(preferences)
+      ? { ...state.preferences, ...preferences }
+      : state.preferences,
+    privacy: isObj(privacy) ? { ...state.privacy, ...privacy } : state.privacy,
+    readerSettings: isObj(readerSettings)
       ? { ...state.readerSettings, ...readerSettings }
       : state.readerSettings,
   }));
@@ -217,6 +221,10 @@ app.post('/api/me/journey', (req, res) => {
 app.patch('/api/me/journey/stage', (req, res) => {
   const token = extractToken(req);
   const { level, status } = req.body || {};
+  const validStatuses = ['completed', 'current', 'upcoming', 'skipped'];
+  if (typeof level !== 'number' || !validStatuses.includes(status)) {
+    return res.status(400).json({ error: 'Invalid journey level or status.' });
+  }
   const user = updateUserState(token, (state) => ({
     ...state,
     journey: state.journey.map((stage) =>
@@ -230,10 +238,21 @@ app.patch('/api/me/journey/stage', (req, res) => {
 app.post('/api/me/library', (req, res) => {
   const token = extractToken(req);
   const { bookId, shelf, action } = req.body as {
-    bookId: string;
-    shelf: ShelfStatus;
-    action: 'add' | 'remove';
+    bookId?: string;
+    shelf?: ShelfStatus;
+    action?: 'add' | 'remove';
   };
+  const validShelves: ShelfStatus[] = ['reading', 'want_to_read', 'completed', 'abandoned', 'favorites'];
+  if (
+    typeof bookId !== 'string' ||
+    !bookId ||
+    !shelf ||
+    !validShelves.includes(shelf) ||
+    (action !== 'add' && action !== 'remove')
+  ) {
+    return res.status(400).json({ error: 'Invalid library shelf update request.' });
+  }
+
   const user = updateUserState(token, (state) => {
     const nextLibrary = { ...state.library };
     if (shelf === 'favorites') {
@@ -280,6 +299,9 @@ app.post('/api/me/progress', (req, res) => {
     return res.status(404).json({ error: 'Book not found.' });
   }
 
+  const safeMinutes = Number.isFinite(Number(minutesDelta)) ? Math.max(0, Number(minutesDelta)) : 0;
+  const safePages = Number.isFinite(Number(pagesDelta)) ? Math.max(0, Number(pagesDelta)) : 0;
+
   let levelUpSuggestion: string | null = null;
 
   const user = updateUserState(token, (state) => {
@@ -295,43 +317,48 @@ app.post('/api/me/progress', (req, res) => {
     };
 
     const nextBookmarks = [...prev.bookmarks];
-    if (typeof toggleBookmarkChapter === 'number') {
+    if (typeof toggleBookmarkChapter === 'number' && Number.isInteger(toggleBookmarkChapter) && toggleBookmarkChapter >= 0) {
       const idx = nextBookmarks.indexOf(toggleBookmarkChapter);
       if (idx >= 0) nextBookmarks.splice(idx, 1);
       else nextBookmarks.push(toggleBookmarkChapter);
     }
 
     const nextHighlights = [...prev.highlights];
-    if (addHighlight && addHighlight.text) {
+    if (addHighlight && typeof addHighlight.text === 'string' && addHighlight.text.trim()) {
       nextHighlights.unshift({
-        chapterIndex: addHighlight.chapterIndex ?? prev.currentChapterIndex,
+        chapterIndex:
+          typeof addHighlight.chapterIndex === 'number' && Number.isInteger(addHighlight.chapterIndex)
+            ? Math.max(0, addHighlight.chapterIndex)
+            : prev.currentChapterIndex,
         text: String(addHighlight.text).slice(0, 400),
       });
     }
 
     const computedPercent =
-      typeof percentComplete === 'number'
-        ? Math.min(100, Math.max(0, percentComplete))
+      typeof percentComplete === 'number' && Number.isFinite(percentComplete)
+        ? Math.min(100, Math.max(0, Math.round(percentComplete)))
         : prev.percentComplete;
     const computedPage = Math.max(1, Math.round((computedPercent / 100) * book.pages));
 
     const updatedProgress = {
       ...prev,
       currentChapterIndex:
-        typeof currentChapterIndex === 'number' ? currentChapterIndex : prev.currentChapterIndex,
+        typeof currentChapterIndex === 'number' && Number.isInteger(currentChapterIndex) && currentChapterIndex >= 0
+          ? currentChapterIndex
+          : prev.currentChapterIndex,
       currentPage: computedPage,
       percentComplete: computedPercent,
-      minutesRead: prev.minutesRead + Number(minutesDelta || 0),
+      minutesRead: prev.minutesRead + safeMinutes,
       bookmarks: nextBookmarks,
       highlights: nextHighlights,
-      rating: typeof rating === 'number' ? rating : prev.rating,
+      rating: typeof rating === 'number' && Number.isFinite(rating) ? rating : prev.rating,
       lastReadAt: new Date().toISOString(),
     };
 
     const today = new Date().toISOString().slice(0, 10);
     const sameDay = state.stats.lastActiveDate === today;
-    const newTotalMinutes = state.stats.totalMinutesRead + Number(minutesDelta || 0);
-    const newPagesRead = state.stats.pagesRead + Number(pagesDelta || 0);
+    const newTotalMinutes = state.stats.totalMinutesRead + safeMinutes;
+    const newPagesRead = state.stats.pagesRead + safePages;
     const avgPagesPerHour =
       newTotalMinutes >= 15
         ? Math.max(15, Math.min(80, Math.round((newPagesRead / newTotalMinutes) * 60)))
@@ -367,8 +394,8 @@ app.post('/api/me/progress', (req, res) => {
         lastActiveDate: today,
         avgPagesPerHour,
         challengePagesToday: sameDay
-          ? state.stats.challengePagesToday + Number(pagesDelta || 0)
-          : Number(pagesDelta || 0),
+          ? state.stats.challengePagesToday + safePages
+          : safePages,
       },
     };
   });

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowRight,
   Check,
@@ -101,6 +101,10 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
 }) => {
   const [tab, setTab] = useState<DiscoverTab>(initialSubTab);
 
+  useEffect(() => {
+    setTab(initialSubTab);
+  }, [initialSubTab]);
+
   // Multi-Genre & Public Domain Search state
   const [selectedGenres, setSelectedGenres] = useState<Genre[]>(user.preferences.genres);
   const [maxDiff, setMaxDiff] = useState<number>(user.preferences.maxDifficulty);
@@ -151,6 +155,12 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
   const [compareBookA, setCompareBookA] = useState<string>(
     initialCompareBookId || 'white-nights'
   );
+
+  useEffect(() => {
+    if (initialCompareBookId) {
+      setCompareBookA(initialCompareBookId);
+    }
+  }, [initialCompareBookId]);
   const [compareBookB, setCompareBookB] = useState<string>('tagore-stories');
   const [likedBookId, setLikedBookId] = useState<string>('alchemist');
 

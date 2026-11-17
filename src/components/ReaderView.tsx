@@ -10,10 +10,9 @@ import {
   Settings2,
   ShieldCheck,
   Sparkles,
-  Volume2,
   X,
 } from 'lucide-react';
-import { Book, ReaderSettings, SpoilerLevel, SupportedLanguage, UserState } from '../types.ts';
+import { Book, ReaderSettings, SpoilerLevel, UserState } from '../types.ts';
 import { api } from '../lib/api.ts';
 
 interface ReaderViewProps {
@@ -72,6 +71,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   // Word lookup drawer
   const [selectedWord, setSelectedWord] = useState<string | null>(null);
   const [wordLookup, setWordLookup] = useState<WordLookupResult | null>(null);
+  const [wordLookupError, setWordLookupError] = useState<string | null>(null);
   const [wordLoading, setWordLoading] = useState(false);
   const [wordSaved, setWordSaved] = useState(false);
 
@@ -86,6 +86,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
   // Chapter Reflection Journal Modal & Difficulty Progression Prompt
   const [showJournalModal, setShowJournalModal] = useState(false);
+  const [completedChapterTitle, setCompletedChapterTitle] = useState('');
   const [journalThought, setJournalThought] = useState('');
   const [journalCharacter, setJournalCharacter] = useState('');
   const [journalQuote, setJournalQuote] = useState('');
@@ -125,6 +126,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
     setSelectedWord(cleaned);
     setWordLookup(null);
+    setWordLookupError(null);
     setWordSaved(false);
     setWordLoading(true);
     try {
@@ -135,30 +137,28 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         language: user.preferences.appLanguage,
       });
       setWordLookup(data);
-    } catch {
-      setWordLookup({
-        word: cleaned,
-        simpleMeaning: 'Could not reach the dictionary service right now. Please try again.',
-        example: '',
-        similarWords: [],
-        difficulty: 'Medium',
-        simpleEnglishSentence: paragraphText,
-        translatedMeaning: '',
-      });
+    } catch (err: any) {
+      setWordLookupError(
+        err.message || 'Could not reach the dictionary service right now. Please try again.'
+      );
     } finally {
       setWordLoading(false);
     }
   };
 
   const handleSaveVocabulary = async () => {
-    if (!wordLookup) return;
-    const res = await api.saveVocabulary({
-      ...wordLookup,
-      translatedLanguage: user.preferences.appLanguage,
-      bookTitle: book.title,
-    });
-    onUserUpdated(res.user);
-    setWordSaved(true);
+    if (!wordLookup || wordLookupError) return;
+    try {
+      const res = await api.saveVocabulary({
+        ...wordLookup,
+        translatedLanguage: user.preferences.appLanguage,
+        bookTitle: book.title,
+      });
+      onUserUpdated(res.user);
+      setWordSaved(true);
+    } catch {
+      // ignore duplicate or transient save error
+    }
   };
 
   const handleAskAssistant = async (questionText: string, paragraphOverride?: string) => {
@@ -192,6 +192,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   };
 
   const handleCompleteChapter = async () => {
+    const finishedTitle = chapter.title;
     const nextIdx = Math.min(book.chapters.length - 1, chapterIdx + 1);
     const isLast = chapterIdx >= book.chapters.length - 1;
     const pct = isLast
@@ -212,6 +213,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     if (res.levelUpSuggestion) {
       setLevelUpBanner(res.levelUpSuggestion);
     }
+    setCompletedChapterTitle(finishedTitle);
     setShowJournalModal(true);
     if (!isLast) {
       setChapterIdx(nextIdx);
@@ -223,7 +225,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     const res = await api.saveJournal({
       bookId: book.id,
       bookTitle: book.title,
-      chapterTitle: chapter.title,
+      chapterTitle: completedChapterTitle || chapter.title,
       thought: journalThought,
       favoriteCharacter: journalCharacter,
       favoriteQuote: journalQuote,
@@ -702,6 +704,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             {wordLoading ? (
               <p className="text-xs text-stone-500 dark:text-zinc-400">
                 Looking up simple definition and example...
+              </p>
+            ) : wordLookupError ? (
+              <p className="text-xs text-red-700 dark:text-red-300 leading-relaxed">
+                {wordLookupError}
               </p>
             ) : (
               wordLookup && (
